@@ -11,6 +11,12 @@ local Cooldown = false
 local comboStep = 0
 local lastAttackTime = 0
 
+--[[
+
+here we check what goes inside the player, if what enters has the tag 'Tool',
+we apply the function for the tool to actually behave like one
+
+]]--
 player.CharacterAdded:Connect(function(char)
     char.ChildAdded:Connect(function(Child)
         if Child:HasTag("Tool") then 
@@ -19,6 +25,14 @@ player.CharacterAdded:Connect(function(char)
     end)
 end)
 
+
+--[[
+
+here we have the function in which we detect if the tool was activated 
+by the player, if it was unequipped, equipped... Here we play the 
+animation and send the signal to the server. ...
+
+]]--
 function ToolsLocalMain.LocalTool(tool)
     if connection[tool] then return end
     connection[tool] = true

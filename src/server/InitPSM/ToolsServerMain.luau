@@ -8,8 +8,16 @@ local DebounceCooldown = {}
 local HITBOX_SIZE = Vector3.new(5, 5, 5)
 local OFFSET_Z = -4 
 
-function ToolsServerMain.VerifiedPlayers(playerQueSocou, damage, soundDestin, SoundHit, SoundSwoosh, SoundDied)
-    local character = playerQueSocou.Character
+--[[
+
+This is the server function in which we do the hitbox and filter
+through the table to see if it really is a player, also having the
+information taken from the other modules, such as the date to take
+life, reset time...
+
+]]--
+function ToolsServerMain.VerifiedPlayers(playerWhoPunched, damage, soundDestin, SoundHit, SoundSwoosh, SoundDied)
+    local character = playerWhoPunched.Character
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     if not hrp or not soundDestin then return end
 
@@ -17,7 +25,7 @@ function ToolsServerMain.VerifiedPlayers(playerQueSocou, damage, soundDestin, So
 
     local possibleTargets = {}
     for _, p in ipairs(ModuleServices.Players:GetPlayers()) do
-        if p ~= playerQueSocou and p.Character then
+        if p ~= playerWhoPunched and p.Character then
             table.insert(possibleTargets, p.Character)
         end
     end
@@ -60,12 +68,17 @@ function ToolsServerMain.VerifiedPlayers(playerQueSocou, damage, soundDestin, So
                     ModuleServices.Debris:AddItem(cloneSoundDied, cloneSoundDied.TimeLength + 0.1)
                 end
             end)
-
-            print("Dano de " .. damage .. " em: " .. enemyCharacter.Name)
         end
     end
 end
 
+--[[
+
+here we receive the signal sent by the client when the player 
+uses the tool and we apply the function and connect the data
+according to the tool we are using ...
+
+]]--
 RS.Events.SignalPunch.OnServerEvent:Connect(function(player, toolName, comboStep)
     local ChosenToolData = ToolInfoModule.Data[toolName]
     if not ChosenToolData then return end
@@ -91,7 +104,7 @@ RS.Events.SignalPunch.OnServerEvent:Connect(function(player, toolName, comboStep
         task.wait(attackInfo.Cooldown)
         DebounceCooldown[player] = nil
     else
-        warn("Ataque não definido ou personagem ausente para: " .. toolName)
+        warn("Undefined attack or missing character for: " .. toolName)
     end
 end)
 
