@@ -1,112 +1,178 @@
+--[[
+    Combat & Defense System (Client-Side)
+    Developed for Open Source use.
+    
+    Features:
+    - Input handling for blocking and attacking
+    - Animation priority management
+    - Automatic cleanup of defense tracks on Guard Break
+]]
+
 local ToolsLocalMain = {}
 
+-- Services
 local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
 local ModuleServices = require(RS.Module.ServicesModule)
 local ToolInfoModule = require(RS.Module.ToolsInfo)
-local player = ModuleServices.Players.LocalPlayer
 
-local connection = {}
-local Cooldown = false
+-- Variables
+local player = ModuleServices.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local animator = humanoid:WaitForChild("Animator")
+
+local isCooldown = false
+local isDefending = false
+local isGuardBroken = false
+local currentToolData = nil
+local blockTrack = nil -- Stores the active defense animation
 
 local comboStep = 0
 local lastAttackTime = 0
+local toolConnections = {}
 
---[[
-
-here we check what goes inside the player, if what enters has the tag 'Tool',
-we apply the function for the tool to actually behave like one
-
-]]--
-player.CharacterAdded:Connect(function(char)
-    char.ChildAdded:Connect(function(Child)
-        if Child:HasTag("Tool") then 
-            ToolsLocalMain.LocalTool(Child)
-        end
-    end)
-end)
-
-
---[[
-
-here we have the function in which we detect if the tool was activated 
-by the player, if it was unequipped, equipped... Here we play the 
-animation and send the signal to the server. ...
-
-]]--
-function ToolsLocalMain.LocalTool(tool)
-    if connection[tool] then return end
-    connection[tool] = true
-
-    local ChosenToolData = ToolInfoModule.Data[tool.Name]
+--[[ 
+    CRITICAL: Guard Break Listener
+    Force-stops the blocking animation when the server breaks the player's guard.
+]]
+RS.Events.DefenseEvent.OnClientEvent:Connect(function()
+    isDefending = false
+    isGuardBroken = true
     
-    if not ChosenToolData then 
-        warn("A ferramenta " .. tool.Name .. " não tem dados no ToolInfoModule!")
-        return 
+    -- Force stop the defense animation immediately
+    if blockTrack then
+        blockTrack:Stop(0.1)
+        blockTrack = nil
     end
 
-    local humanoid = player.Character:WaitForChild("Humanoid")
-    local animator = humanoid:WaitForChild("Animator")
+    print("Defense broken by server!")
+    task.wait(5) -- Stun duration
+    isGuardBroken = false
+end)
 
+--[[ 
+    Input handling for Blocking (F Key)
+]]
+UIS.InputBegan:Connect(function(input, processed)
+
+    if processed or isGuardBroken or not currentToolData then return end
+
+    if input.KeyCode == Enum.KeyCode.F then
+        if isDefending then return end
+        
+        isDefending = true
+        
+        -- Load and play blocking animation
+        blockTrack = animator:LoadAnimation(currentToolData.DefendingAnimation)
+        blockTrack.Priority = Enum.AnimationPriority.Action
+        blockTrack.Looped = true
+        blockTrack:Play()
+
+        RS.Events.DefenseEvent:FireServer(true)
+    end
+end)
+
+UIS.InputEnded:Connect(function(input, processed)
+    if input.KeyCode == Enum.KeyCode.F and isDefending then
+        isDefending = false
+        if blockTrack then
+            blockTrack:Stop()
+            blockTrack = nil
+        end
+        RS.Events.DefenseEvent:FireServer(false)
+    end
+end)
+
+--[[ 
+    Core tool logic: Attacks, Idles, and Setup.
+]]
+function ToolsLocalMain.LocalTool(tool)
+    if toolConnections[tool] then return end
+    toolConnections[tool] = true
+
+    local toolData = ToolInfoModule.Data[tool.Name]
+    if not toolData then return end
+
+    -- Pre-load combo animations
     local loadedTracks = {}
-    
-    for i, attackData in ipairs(ChosenToolData.Combo) do
+    for i, attackData in ipairs(toolData.Combo) do
         if attackData.Animation then
             loadedTracks[i] = animator:LoadAnimation(attackData.Animation)
         end
     end
 
+    -- Attack Activation
     tool.Activated:Connect(function()
-        if Cooldown then return end
+        if isCooldown or isDefending or isGuardBroken then return end
         
         local currentTime = tick()
         local timeSinceLastAttack = currentTime - lastAttackTime
         
-        if comboStep < 1 then comboStep = 1 end
+        -- Combo reset logic
+        local prevIndex = (comboStep == 0) and #toolData.Combo or comboStep
+        local resetTime = toolData.Combo[prevIndex].ResetTime or 1
 
-        local currentAttack = ChosenToolData.Combo[comboStep]
-        
-        local previousAttack = ChosenToolData.Combo[comboStep - 1] or ChosenToolData.Combo[#ChosenToolData.Combo]
-        local maxWait = previousAttack.ResetTime or 1
-
-        if timeSinceLastAttack > maxWait then
+        if timeSinceLastAttack > resetTime then
             comboStep = 1
-            currentAttack = ChosenToolData.Combo[comboStep]
+        else
+            comboStep = (comboStep % #toolData.Combo) + 1
         end
 
+        local currentAttack = toolData.Combo[comboStep]
         local track = loadedTracks[comboStep]
 
-        if not track then 
-            warn("Erro: Animação não encontrada para o combo " .. comboStep)
-            return 
+        if track then
+            isCooldown = true
+            lastAttackTime = currentTime
+            
+            RS.Events.SignalPunch:FireServer(tool.Name, comboStep)
+            track.Priority = Enum.AnimationPriority.Action2
+            track:Play()
+
+            task.wait(currentAttack.Cooldown)
+            isCooldown = false
         end
+    end)
 
-        Cooldown = true
-        lastAttackTime = currentTime
-        
-        RS.Events.SignalPunch:FireServer(tool.Name, comboStep)
+    local idleTrack = nil
 
-        track:Play()
-        track.Priority = Enum.AnimationPriority.Action
-        
-        print("Atacou com " .. tool.Name .. " | Passo do Combo: " .. comboStep)
-
-        if comboStep >= #ChosenToolData.Combo then
-            comboStep = 1 
-        else
-            comboStep = comboStep + 1
+    tool.Equipped:Connect(function()
+        currentToolData = toolData
+        if toolData.AnimationIdle then
+            idleTrack = animator:LoadAnimation(toolData.AnimationIdle)
+            idleTrack:Play()
         end
-
-        task.wait(currentAttack.Cooldown)
-        Cooldown = false
     end)
 
     tool.Unequipped:Connect(function()
-        comboStep = 1
-    end)
-
-    tool.Destroying:Connect(function()
-        connection[tool] = nil
+        currentToolData = nil
+        isDefending = false
+        if idleTrack then idleTrack:Stop() end
+        if blockTrack then blockTrack:Stop() end
+        RS.Events.DefenseEvent:FireServer(false)
+        comboStep = 0
     end)
 end
+
+local function Setup(newChar)
+    newChar.ChildAdded:Connect(function(child)
+        if child:HasTag("Tool") then 
+            ToolsLocalMain.LocalTool(child)
+        end
+    end)
+end
+
+-- Update character references on respawn
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    animator = humanoid:WaitForChild("Animator")
+
+    -- Initialize for tools tagged as "Tool"
+    Setup(character)
+end)
+
+Setup(character)
 
 return ToolsLocalMain
